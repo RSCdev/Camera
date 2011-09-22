@@ -1,6 +1,9 @@
 Camera = {}
 Camera_mt = { __index = Camera }
 
+local abs = math.abs
+local floor = math.floor
+
 --- Create a new instance of a Camera object.
 -- @return The newly created Camera instance.
 function Camera:new()
@@ -66,6 +69,7 @@ function Camera:newLayer( name, scale )
 	}
 	
 	self:getView():insert( self._layers[ name ]._view )
+	
 end
 
 --- Moves the camera.
@@ -142,12 +146,71 @@ function Camera:getView()
 	return self._view
 end
 
+--- Clamps a position to within bounds.
+-- @param x The X position to clamp.
+-- @param y The Y position to clamp.
+-- @param bounds The bounding box for the clamping. A table with x, y, width and height. X and y are top left corner.
+-- @return The clamped X position.
+-- @return The clamped Y position.
+function Camera:clampPosition( x, y, bounds )
+	
+	if bounds then
+	
+		if not bounds.offset then
+			bounds.offset = { x = 0, y = 0 }
+		end
+	
+		if x > bounds.x then
+			x = bounds.x
+		elseif abs( x ) > ( bounds.width - bounds.offset.x ) - display.contentWidth then
+			x = - ( ( bounds.width - bounds.offset.x ) - display.contentWidth ) 
+		end
+
+		if y > bounds.y then
+			y = bounds.y
+		elseif abs( y ) > ( bounds.height - bounds.offset.y ) - display.contentHeight then
+			y = - ( ( bounds.height - bounds.offset.y ) - display.contentHeight )
+		end
+		
+	end
+	
+	return x, y
+	
+end
+
+--- Calculates the viewpoint to use when setting the camera position. Called automatically, nothing to see here.
+-- @param x The x position for the camera.
+-- @param y The y position for the camera.
+function Camera:calculateViewpoint( x, y )
+
+	local group = self:getView()
+	
+	local xPos = x or ( group.x + ( group.width * 0.5 ) ) -- Don't like this
+	local yPos = y or ( group.y + ( group.height * 0.5 ) ) -- Don't like this
+
+	local actualPosition = { x = xPos, y = yPos }
+	local centreOfView = { x = display.contentWidth * 0.5 , y = display.contentHeight * 0.5 }
+	
+	local viewPoint = { x = centreOfView.x - actualPosition.x, y = centreOfView.y - actualPosition.y }
+         
+	return viewPoint
+	
+end
+
 --- Sets the position of the camera.
 -- @param x The new x position for the camera.
 -- @param y The new y position for the camera.
 function Camera:setPosition( x, y )
-	self:getView().x = x
-	self:getView().y = y
+
+	local viewPoint = self:calculateViewpoint( x, y )
+	
+	self:getView().x = floor( viewPoint.x )
+	self:getView().y = floor( viewPoint.y )
+	
+	if self._bounds then
+		self:getView().x, self:getView().y = self:clampPosition( self:getView().x, self:getView().y, self._bounds )
+	end
+	
 end
 
 --- Gets the position of the camera.
@@ -185,13 +248,21 @@ end
 --- Converts a screen position to a world position.
 -- @param x The screen X position.
 -- @param y The screen Y position.
+-- @param centred If true the position will be offset to return it as if it is the centre of the screen.
 -- @return The converted x and y positions.
-function Camera:convertScreenToWorldPosition( x, y )
+function Camera:convertScreenToWorldPosition( x, y, centred )
 
 	local posX, posY = self:getPosition()	
 	local scaleX, scaleY = self:getScale()
 	
-	return x * scaleX + posX, y * scaleY + posY
+	local newX, newY = -x * scaleX + posX, -y * scaleY + posY
+	
+	if centred then
+		newX = newX + display.contentWidth / 2
+		newY = newY + display.contentHeight / 2
+	end
+	
+	return newX, newY
 	
 end
 
@@ -212,7 +283,22 @@ end
 --- Updates the camera.
 -- @param event enterFrame event table.
 function Camera:update( event )
+
+	if self._focus and self._focus.object then
+		self:setPosition( self._focus.object.x + self._focus.offset.x, self._focus.object.y + self._focus.offset.y )
+	end
 	self:updateParallaxPositions() 
+	
+end
+
+--- Sets the focus of the camera. When updated the camera will follow it.
+-- @param event enterFrame event table.
+function Camera:setFocus( object, offset )
+	self._focus = 
+	{
+		object = object,
+		offset = offset or { x = 0, y = 0 }
+	}
 end
 
 --- Transitions the camera.
@@ -223,10 +309,70 @@ function Camera:transitionTo( transitionParams )
 		transition.cancel( self._transition )
 		self._transition = nil
 	end
-	
+
 	self._transition = transition.to( self:getView(), transitionParams )
 	
 	return self._transition
+	
+end
+
+function Camera:drag( event )
+	
+	if self._transition then
+		transition.cancel( self._transition )
+		self._transition = nil
+	end
+	
+	local view = self:getView()
+	
+	if event.phase == "began" then
+
+		view._touchPosition = {}
+    	view._touchPosition.x = event.x - view.x
+        view._touchPosition.y = event.y - view.y
+
+    elseif event.phase == "moved" then
+
+		if not view._touchPosition then
+			view._touchPosition = {}
+	    	view._touchPosition.x = event.x - view.x
+	        view._touchPosition.y = event.y - view.y
+		end
+		
+   		view.x = event.x - view._touchPosition.x
+        view.y = event.y - view._touchPosition.y
+
+    end
+    
+   	if self._bounds then
+		view.x, view.y = self:clampPosition( view.x, view.y, self._bounds )
+	end 
+    
+end
+
+-- Sets the clamping bounds.
+-- @params x The x position of the bounds.
+-- @params y The y position of the bounds.
+-- @params width The width of the bounds.
+-- @params height The height of the bounds.
+function Camera:setClampingBounds( x, y, width, height )
+
+	if not self._bounds then
+		self._bounds = {}
+		self._bounds.offset = { x = 0, y = 0 }
+	end
+	
+	self._bounds.x = x
+	self._bounds.y = y
+	self._bounds.width = width
+	self._bounds.height = height
+	
+end
+
+-- Gets the size of the content in the Camera.
+-- @return The width and height of the content.
+function Camera:getContentSize()
+	return self:getView().contentWidth, self:getView().contentHeight
 end
 
 --- Cleans up the camera.
